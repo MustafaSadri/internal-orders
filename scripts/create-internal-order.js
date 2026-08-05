@@ -2,7 +2,6 @@ require('dotenv').config();
 
 const TOKEN = process.env.TOKEN;
 const MS_BASE = 'https://api.moysklad.ru/api/remap/1.2';
-const THRESHOLD = Number(process.env.REORDER_THRESHOLD) || 50;
 const STORE_ID = 'acc89668-dc19-11f0-0a80-1b4c00271378'; // yuzhnie Varota
 const ORGANIZATION_ID = 'acc70c4d-dc19-11f0-0a80-1b4c00271375'; // pd
 
@@ -47,29 +46,64 @@ async function msAll(endpoint, maxRecords = 10000) {
   return { rows, total };
 }
 
-async function main() {
-  const { rows: stock } = await msAll('/report/stock/all');
+// The "Reorder Point" shown in the Stock UI lives on the product entity as
+// `minimumBalance`. Variants don't carry their own value — they inherit it
+// from their parent product — so a variant -> product lookup is needed.
+function reorderPointFor(row, productMinBalance, variantToProduct) {
+  const id = (row.meta?.href || '').split('/').pop().split('?')[0];
+  if (row.meta?.type === 'product') return productMinBalance.get(id) || 0;
+  if (row.meta?.type === 'variant') {
+    const productId = variantToProduct.get(id);
+    return productId ? (productMinBalance.get(productId) || 0) : 0;
+  }
+  return 0;
+}
 
-  const positions = stock
-    .filter(row => (row.quantity ?? 0) < THRESHOLD)
-    .filter(row => row.meta?.href && row.meta?.type)
-    .map(row => {
-      const quantity = row.quantity ?? 0;
-      const reorderQty = THRESHOLD - Math.max(quantity, 0);
-      return {
-        quantity: reorderQty,
-        assortment: {
-          meta: {
-            href: row.meta.href.split('?')[0],
-            type: row.meta.type,
-            mediaType: 'application/json'
-          }
+async function main() {
+  const [{ rows: stock }, { rows: products }, { rows: variants }] = await Promise.all([
+    msAll('/report/stock/all'),
+    msAll('/entity/product'),
+    msAll('/entity/variant')
+  ]);
+
+  const productMinBalance = new Map();
+  products.forEach(p => { if (p.minimumBalance) productMinBalance.set(p.id, p.minimumBalance); });
+
+  const variantToProduct = new Map();
+  variants.forEach(v => {
+    const productId = (v.product?.meta?.href || '').split('/').pop().split('?')[0];
+    if (productId) variantToProduct.set(v.id, productId);
+  });
+
+  const candidates = stock
+    .map(row => ({ row, reorderPoint: reorderPointFor(row, productMinBalance, variantToProduct) }))
+    .filter(c => c.reorderPoint > 0)
+    .filter(c => (c.row.quantity ?? 0) < c.reorderPoint);
+
+  console.log(`Found ${candidates.length} item(s) with a reorder point set and available quantity below it:`);
+  candidates.forEach(({ row, reorderPoint }) => {
+    const quantity = row.quantity ?? 0;
+    const reorderQty = reorderPoint - Math.max(quantity, 0);
+    console.log(`  - ${row.name} | available=${quantity} | reorderPoint=${reorderPoint} | order=${reorderQty}`);
+  });
+
+  const positions = candidates.map(({ row, reorderPoint }) => {
+    const quantity = row.quantity ?? 0;
+    const reorderQty = reorderPoint - Math.max(quantity, 0);
+    return {
+      quantity: reorderQty,
+      assortment: {
+        meta: {
+          href: row.meta.href.split('?')[0],
+          type: row.meta.type,
+          mediaType: 'application/json'
         }
-      };
-    });
+      }
+    };
+  });
 
   if (!positions.length) {
-    console.log('No items below threshold ' + THRESHOLD + ' — nothing to order.');
+    console.log('Nothing to order.');
     return;
   }
 
