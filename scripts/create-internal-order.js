@@ -49,10 +49,9 @@ async function msAll(endpoint, maxRecords = 10000) {
 // The "Reorder Point" shown in the Stock UI lives on the product entity as
 // `minimumBalance`. Variants don't carry their own value — they inherit it
 // from their parent product — so a variant -> product lookup is needed.
-function reorderPointFor(row, productMinBalance, variantToProduct) {
-  const id = (row.meta?.href || '').split('/').pop().split('?')[0];
-  if (row.meta?.type === 'product') return productMinBalance.get(id) || 0;
-  if (row.meta?.type === 'variant') {
+function reorderPointFor(id, type, productMinBalance, variantToProduct) {
+  if (type === 'product') return productMinBalance.get(id) || 0;
+  if (type === 'variant') {
     const productId = variantToProduct.get(id);
     return productId ? (productMinBalance.get(productId) || 0) : 0;
   }
@@ -60,11 +59,17 @@ function reorderPointFor(row, productMinBalance, variantToProduct) {
 }
 
 async function main() {
-  const [{ rows: stock }, { rows: products }, { rows: variants }] = await Promise.all([
-    msAll('/report/stock/all'),
+  // report/stock/bystore breaks quantity down per warehouse — needed because
+  // this order only replenishes yuzhnie Varota, not company-wide stock.
+  const [{ rows: byStore }, { rows: products }, { rows: variants }, { rows: assortment }] = await Promise.all([
+    msAll('/report/stock/bystore'),
     msAll('/entity/product'),
-    msAll('/entity/variant')
+    msAll('/entity/variant'),
+    msAll('/entity/assortment')
   ]);
+
+  const nameMap = new Map();
+  assortment.forEach(a => { if (a.meta?.href) nameMap.set(a.meta.href.split('?')[0], a.name); });
 
   const productMinBalance = new Map();
   products.forEach(p => { if (p.minimumBalance) productMinBalance.set(p.id, p.minimumBalance); });
@@ -75,32 +80,43 @@ async function main() {
     if (productId) variantToProduct.set(v.id, productId);
   });
 
-  const candidates = stock
-    .map(row => ({ row, reorderPoint: reorderPointFor(row, productMinBalance, variantToProduct) }))
-    .filter(c => c.reorderPoint > 0)
-    .filter(c => (c.row.quantity ?? 0) < c.reorderPoint);
+  const candidates = [];
+  byStore.forEach(row => {
+    const href = row.meta.href.split('?')[0];
+    const id = href.split('/').pop();
+    const type = row.meta.type;
+    const reorderPoint = reorderPointFor(id, type, productMinBalance, variantToProduct);
+    if (reorderPoint <= 0) return;
 
-  console.log(`Found ${candidates.length} item(s) with a reorder point set and available quantity below it:`);
-  candidates.forEach(({ row, reorderPoint }) => {
-    const quantity = row.quantity ?? 0;
-    const reorderQty = reorderPoint - Math.max(quantity, 0);
-    console.log(`  - ${row.name} | available=${quantity} | reorderPoint=${reorderPoint} | order=${reorderQty}`);
+    const storeEntry = row.stockByStore.find(s => s.meta.href.includes(STORE_ID));
+    const available = storeEntry ? storeEntry.stock - storeEntry.reserve : 0;
+    if (available >= reorderPoint) return;
+
+    candidates.push({
+      href,
+      type,
+      name: nameMap.get(href) || id,
+      available,
+      reorderPoint,
+      reorderQty: reorderPoint - Math.max(available, 0)
+    });
   });
 
-  const positions = candidates.map(({ row, reorderPoint }) => {
-    const quantity = row.quantity ?? 0;
-    const reorderQty = reorderPoint - Math.max(quantity, 0);
-    return {
-      quantity: reorderQty,
-      assortment: {
-        meta: {
-          href: row.meta.href.split('?')[0],
-          type: row.meta.type,
-          mediaType: 'application/json'
-        }
+  console.log(`Found ${candidates.length} item(s) below their reorder point in yuzhnie Varota:`);
+  candidates.forEach(c => {
+    console.log(`  - ${c.name} | available=${c.available} | reorderPoint=${c.reorderPoint} | order=${c.reorderQty}`);
+  });
+
+  const positions = candidates.map(c => ({
+    quantity: c.reorderQty,
+    assortment: {
+      meta: {
+        href: c.href,
+        type: c.type,
+        mediaType: 'application/json'
       }
-    };
-  });
+    }
+  }));
 
   if (!positions.length) {
     console.log('Nothing to order.');
