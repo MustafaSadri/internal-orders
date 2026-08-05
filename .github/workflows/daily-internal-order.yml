@@ -1,0 +1,19 @@
+name: Daily Internal Order
+
+on:
+  schedule:
+    - cron: '0 15 * * *' # 18:00 Moscow time (UTC+3)
+  workflow_dispatch: {}
+
+jobs:
+  create-order:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: node scripts/create-internal-order.js
+        env:
+          TOKEN: ${{ secrets.MOYSKLAD_TOKEN }}
