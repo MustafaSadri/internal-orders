@@ -61,12 +61,12 @@ function reorderPointFor(id, type, productMinBalance, variantToProduct) {
 async function main() {
   // report/stock/bystore breaks quantity down per warehouse — needed because
   // this order only replenishes yuzhnie Varota, not company-wide stock.
-  const [{ rows: byStore }, { rows: products }, { rows: variants }, { rows: assortment }] = await Promise.all([
-    msAll('/report/stock/bystore'),
-    msAll('/entity/product'),
-    msAll('/entity/variant'),
-    msAll('/entity/assortment')
-  ]);
+  // Fetched sequentially: this MoySklad plan's concurrent-request limit
+  // rejects them with a 403 when fired in parallel.
+  const { rows: byStore } = await msAll('/report/stock/bystore');
+  const { rows: products } = await msAll('/entity/product');
+  const { rows: variants } = await msAll('/entity/variant');
+  const { rows: assortment } = await msAll('/entity/assortment');
 
   const nameMap = new Map();
   assortment.forEach(a => { if (a.meta?.href) nameMap.set(a.meta.href.split('?')[0], a.name); });
