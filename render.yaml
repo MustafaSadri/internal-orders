@@ -1,0 +1,11 @@
+services:
+  - type: cron
+    name: daily-internal-order
+    runtime: node
+    plan: starter
+    schedule: "30 14 * * *" # 17:30 Moscow time (UTC+3, no DST)
+    buildCommand: npm ci
+    startCommand: node scripts/create-internal-order.js
+    envVars:
+      - key: TOKEN
+        sync: false

@@ -4,6 +4,9 @@
   "private": true,
   "description": "Creates a MoySklad internal order to restock items below their reorder point in yuzhnie Varota",
   "main": "scripts/create-internal-order.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node scripts/create-internal-order.js"
   },
