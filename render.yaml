@@ -3,7 +3,7 @@ services:
     name: daily-internal-order
     runtime: node
     plan: starter
-    schedule: "30 14 * * *" # 17:30 Moscow time (UTC+3, no DST)
+    schedule: "0 14 * * *" # 17:00 Moscow time (UTC+3, no DST)
     buildCommand: npm ci
     startCommand: node scripts/create-internal-order.js
     envVars:
